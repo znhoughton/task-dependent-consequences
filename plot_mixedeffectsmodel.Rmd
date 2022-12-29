@@ -1,0 +1,170 @@
+---
+title: "pause_analysis"
+date: "2022-11-29"
+---
+
+# PREP: Clear workspace & Turn off scientific notation
+```{r clear}
+rm(list = ls())
+options(scipen=999)
+```
+
+# Load packages
+```{r}
+library(ggplot2)
+library(dplyr)
+library(lme4)
+library(lmerTest)
+library(lsmeans)
+```
+
+
+# Read in the data (CSV)
+```{r}
+flu_cred_dat = read.csv("cred_flu_dat_num_Z_package.csv") 
+
+# examine the data
+str(flu_cred_dat)
+```
+
+# Rename the variables etc. 
+```{r}
+flu_cred_dat$RESP_NUM = as.numeric(as.character(flu_cred_dat$RESP_NUM)) # this is the DV
+flu_cred_dat$mTurkCode = as.factor(as.character(flu_cred_dat$mTurkCode)) ; nlevels(flu_cred_dat$mTurkCode) # 277 listeners
+flu_cred_dat$speaker = as.factor(as.character(flu_cred_dat$speaker)) ; nlevels(flu_cred_dat$speaker) # 4 talkers
+flu_cred_dat$Item_num = as.factor(as.character(flu_cred_dat$Item_num)) ; nlevels(flu_cred_dat$Item_num) # 24 items
+flu_cred_dat$TF = as.factor(as.character(flu_cred_dat$TF)) ; nlevels(flu_cred_dat$TF) # 2 levels (true vs. false)
+flu_cred_dat$Survey = as.factor(flu_cred_dat$Survey); nlevels(flu_cred_dat$Survey) # 2 levels (Credibility vs. Fluency)
+xtabs(~ Survey, data = flu_cred_dat) # Credibility: 3047 data points; Fluency: 3096 data points
+
+# rename and re=order the pause column
+flu_cred_dat$pause = as.factor(as.character(flu_cred_dat$pause)) 
+levels(flu_cred_dat$pause)
+levels(flu_cred_dat$pause)[levels(flu_cred_dat$pause)=="BetPhrase"] <- "BetPause"
+levels(flu_cred_dat$pause)[levels(flu_cred_dat$pause)=="WithPhrase"] <- "WithinPause"
+flu_cred_dat$pause <- factor(flu_cred_dat$pause, levels = c("NoPause","BetPause","WithinPause"))
+```
+
+####################################
+############### PLOT ###############
+####################################
+
+```{r}
+flu_cred_plot_prep = flu_cred_dat %>% group_by(Survey,speaker_lang, pause) %>% summarise(mean = mean(RESP_NUM, na.rm=TRUE), sd = sd(RESP_NUM, na.rm=TRUE), n = n(), sem=sd(RESP_NUM, na.rm=TRUE)/sqrt(n), ci=qt(0.975,df=n-1)*sem)
+
+ggplot(data=flu_cred_plot_prep, aes(x=speaker_lang, y=mean, shape=pause)) +
+    geom_point(size=3, fill="white", position=position_dodge(width = 0.9)) + 
+    geom_errorbar(aes(ymin=mean-ci, ymax = mean+ci), width = .1, position=position_dodge(width = 0.9)) +
+  facet_wrap(~Survey) +
+  labs(y="Rating") +
+  theme(legend.position="bottom", legend.title = element_blank(), legend.text=element_text(size=12), strip.text = 
+  element_text(size=14), strip.background = element_rect(color = "black", fill = "white",size = 0.8, 
+  linetype = 1),
+  axis.title.x = element_blank(),  axis.title.y = element_text(size=16, vjust=1.5), 
+  axis.text.x  = element_text(size=12, colour ="black"), axis.text.y = element_text(size=14, colour 
+  ="black"), 
+  panel.background = element_rect(fill = "white"), panel.grid.major = element_line(colour = "gray"), 
+  panel.grid.major.x = element_blank()) + 
+  scale_y_continuous(limits = c(2,6)) +
+  scale_fill_grey() 
+```
+
+###############################
+##### MIXED EFFECTS MODEL #####
+###############################
+
+# Random effects - check
+```{r}
+nlevels(flu_cred_dat$speaker) # speaker: 4
+nlevels(flu_cred_dat$Item_num) # items: 24
+nlevels(flu_cred_dat$mTurkCode) # listener: 277
+```
+
+# pause: contrast-coding
+```{r}
+flu_cred_dat$pause_contI<- 
+  ifelse(flu_cred_dat$pause == "NoPause", .5, 
+  ifelse(flu_cred_dat$pause == "BetPause", -.25,
+  ifelse(flu_cred_dat$pause == "WithinPause", -.25,
+  NA))) 
+
+xtabs(~pause + pause_contI, data = flu_cred_dat) # check
+
+flu_cred_dat$pause_contII<- 
+  ifelse(flu_cred_dat$pause == "NoPause", 0, 
+  ifelse(flu_cred_dat$pause == "BetPause", .5,
+  ifelse(flu_cred_dat$pause == "WithinPause", -.5,
+  NA))) 
+
+xtabs(~pause + pause_contII, data = flu_cred_dat) # check
+```
+
+# speaker_lang: contrast-coding
+```{r}
+flu_cred_dat$speaker_lang_cont<- 
+  ifelse(flu_cred_dat$speaker_lang == "Native", .5, 
+  ifelse(flu_cred_dat$speaker_lang == "Non-native", -.5,  
+  NA)) 
+
+xtabs(~speaker_lang+ speaker_lang_cont, data = flu_cred_dat) # check
+```
+
+# TF: contrast_coding
+```{r}
+flu_cred_dat$TF_cont<- 
+  ifelse(flu_cred_dat$TF == "TRUE", .5, 
+  ifelse(flu_cred_dat$TF == "FALSE", -.5,  
+  NA)) 
+
+xtabs(~ TF + TF_cont, data = flu_cred_dat) # check
+```
+
+# task: contrast-coding
+```{r}
+flu_cred_dat$Survey_cont<- 
+  ifelse(flu_cred_dat$Survey == "Credibility", .5, 
+  ifelse(flu_cred_dat$Survey == "Fluency", -.5,  
+  NA)) 
+
+xtabs(~ Survey + Survey_cont, data = flu_cred_dat) # check
+```
+
+# Base model
+```{r}
+flu_cred_model_raw_1 = lmer(RESP_NUM ~ pause_contI*speaker_lang_cont*TF_cont*Survey_cont + pause_contII*speaker_lang_cont*TF_cont*Survey_cont
+                    + (1+ pause_contI + pause_contII + Survey_cont + TF_cont|| speaker)
+                    + (1+ pause_contI*speaker_lang_cont*Survey_cont + pause_contII*speaker_lang_cont*Survey_cont|| Item_num)
+                    + (1+ pause_contI*speaker_lang_cont*TF_cont + pause_contII*speaker_lang_cont*TF_cont|| mTurkCode)
+                      , data = flu_cred_dat, REML=F, control=lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 2e5)))
+summary(flu_cred_model_raw_1)
+
+## These random effects do not account for any variance, so will be removed. 
+# mTurkCode    speaker_lang_cont:TF_cont:pause_contII
+# mTurkCode.1  pause_contI:speaker_lang_cont:TF_cont
+# mTurkCode.3  speaker_lang_cont:pause_contII  
+# mTurkCode.4  speaker_lang_cont:TF_cont
+# mTurkCode.6  pause_contI:speaker_lang_cont
+# mTurkCode.7  pause_contII
+# Item_num.1   pause_contI:speaker_lang_cont:Survey_cont 
+# Item_num.7   pause_contII  
+# Item_num.10  pause_contI 
+# speaker.2    pause_contII  
+# speaker.3    pause_contI 
+```
+
+# Model 
+```{r}
+flu_cred_model_raw_1.5 = lmer(RESP_NUM ~ pause_contI*speaker_lang_cont*TF_cont*Survey_cont + pause_contII*speaker_lang_cont*TF_cont*Survey_cont
+                    + (1+ pause_contI + pause_contII + Survey_cont + TF_cont - pause_contII -pause_contI|| speaker)
+                    + (1+ pause_contI*speaker_lang_cont*Survey_cont + pause_contII*speaker_lang_cont*Survey_cont - pause_contI:speaker_lang_cont:Survey_cont - pause_contII  - pause_contI || Item_num)
+                    + (1+ pause_contI*speaker_lang_cont*TF_cont + pause_contII*speaker_lang_cont*TF_cont -speaker_lang_cont:TF_cont:pause_contII - pause_contI:speaker_lang_cont:TF_cont - speaker_lang_cont:pause_contII  - speaker_lang_cont:TF_cont - pause_contI:speaker_lang_cont - pause_contII || mTurkCode)
+                      , data = flu_cred_dat, REML=F, control=lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 2e5)))
+summary(flu_cred_model_raw_1.5)
+```
+
+# post-hoc examining the interaciton between talker group and task
+```{r}
+lsmeans(flu_cred_model_raw_1.5, pairwise ~ speaker_lang_cont|Survey_cont, adjust="tukey")
+```
+
+## End

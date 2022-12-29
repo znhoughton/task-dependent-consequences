@@ -1,0 +1,48 @@
+---
+title: "correlation"
+date: "2022-11-29"
+---
+
+# Read in the data
+```{r}
+cor.dat1 = read.csv("corDat_analysis.csv")
+
+str(cor.dat1)
+
+cor.dat1$speaker = as.factor(as.character(cor.dat1$speaker)) ; nlevels(cor.dat1$speaker) # 4 talkers (correct number)
+cor.dat1$Item_num = as.factor(as.character(cor.dat1$Item_num)) ; nlevels(cor.dat1$Item_num) # 24 items
+cor.dat1$speaker_lang = as.factor(as.character(cor.dat1$speaker_lang)) ; nlevels(cor.dat1$speaker_lang) # 2 levels
+```
+
+## PLOT
+```{r}
+ggplot(cor.dat1, aes(x=mean_Credibility, y=mean_Fluency)) + 
+  geom_point()+
+  geom_smooth(method=lm, color = "black") +
+  facet_wrap(~speaker_lang) +
+   theme(legend.position="bottom", legend.title = element_blank(), legend.text=element_text(size=12), strip.text = 
+  element_text(size=14), strip.background = element_rect(color = "black", fill = "white",size = 0.8, 
+  linetype = 1),
+  axis.title.x = element_text(size=16, vjust=1.5),  axis.title.y = element_text(size=16, vjust=1.5), 
+  axis.text.x  = element_text(size=12, colour ="black"), axis.text.y = element_text(size=12, colour 
+  ="black"), 
+  panel.background = element_rect(fill = "white"), panel.grid.major = element_line(colour = "gray"), 
+  panel.grid.major.x = element_blank()) + xlab("Credibility rating") + ylab("Fluency rating") +
+  scale_fill_grey() + coord_equal(ratio = 1)
+```
+
+
+## Pearson correlation test
+```{r}
+## Native
+cor.test(cor.dat1[cor.dat1$speaker_lang=="Native",]$mean_Credibility, 
+         cor.dat1[cor.dat1$speaker_lang=="Native",]$mean_Fluency,
+                    method = "pearson") # r = .35, t = 2.51, df = 46, p = .016 *
+
+## Non-native
+cor.test(cor.dat1[cor.dat1$speaker_lang=="Non-native",]$mean_Credibility, 
+         cor.dat1[cor.dat1$speaker_lang=="Non-native",]$mean_Fluency,
+                    method = "pearson") # r = -.11, t = -.73, df = 46, p = .47
+```
+
+##End
