@@ -4,30 +4,39 @@ date: "2022-11-29"
 ---
 
 # PREP: Clear workspace & Turn off scientific notation
+
 ```{r clear}
 rm(list = ls())
 options(scipen=999)
 ```
 
 # Load packages
-```{r}
+
+```{r message = F}
 library(ggplot2)
 library(dplyr)
 library(lme4)
 library(lmerTest)
 library(lsmeans)
+library(brms)
+library(readxl)
+library(rstan)
+library(MASS)
+library(MCMCglmm)
+library(bmmb)
 ```
 
-
 # Read in the data (CSV)
+
 ```{r}
-flu_cred_dat = read.csv("cred_flu_dat_num_Z_package.csv") 
+flu_cred_dat = read.csv("../data/cred_flu_dat_num_Z_package.csv") 
 
 # examine the data
 str(flu_cred_dat)
 ```
 
-# Rename the variables etc. 
+# Rename the variables etc.
+
 ```{r}
 flu_cred_dat$RESP_NUM = as.numeric(as.character(flu_cred_dat$RESP_NUM)) # this is the DV
 flu_cred_dat$mTurkCode = as.factor(as.character(flu_cred_dat$mTurkCode)) ; nlevels(flu_cred_dat$mTurkCode) # 277 listeners
@@ -45,9 +54,9 @@ levels(flu_cred_dat$pause)[levels(flu_cred_dat$pause)=="WithPhrase"] <- "WithinP
 flu_cred_dat$pause <- factor(flu_cred_dat$pause, levels = c("NoPause","BetPause","WithinPause"))
 ```
 
-####################################
-############### PLOT ###############
-####################################
+# PLOT
+
+#################################### 
 
 ```{r}
 flu_cred_plot_prep = flu_cred_dat %>% group_by(Survey,speaker_lang, pause) %>% summarise(mean = mean(RESP_NUM, na.rm=TRUE), sd = sd(RESP_NUM, na.rm=TRUE), n = n(), sem=sd(RESP_NUM, na.rm=TRUE)/sqrt(n), ci=qt(0.975,df=n-1)*sem)
@@ -69,102 +78,261 @@ ggplot(data=flu_cred_plot_prep, aes(x=speaker_lang, y=mean, shape=pause)) +
   scale_fill_grey() 
 ```
 
-###############################
-##### MIXED EFFECTS MODEL #####
-###############################
+# Ordinal Regression model using brms
 
-# Random effects - check
+We will be using the raw Response number rather than the z-scored response for ordinal regression (since z-scoring doesn't make sense for this).
+
+## Base Model
+
 ```{r}
-nlevels(flu_cred_dat$speaker) # speaker: 4
-nlevels(flu_cred_dat$Item_num) # items: 24
-nlevels(flu_cred_dat$mTurkCode) # listener: 277
+ordinal_model1 = brm(RESP_NUM ~ pause_contI*speaker_lang_cont*TF_cont*Survey_cont + pause_contII*speaker_lang_cont*TF_cont*Survey_cont
+                    + (1+ pause_contI + pause_contII + Survey_cont + TF_cont || speaker)
+                    + (1+ pause_contI*speaker_lang_cont*Survey_cont + pause_contII*speaker_lang_cont*Survey_cont || Item_num)
+                    + (1+ pause_contI*speaker_lang_cont*TF_cont + pause_contII*speaker_lang_cont*TF_cont || mTurkCode),
+                    data = flu_cred_dat, 
+                    family = cumulative('logit'),
+                    iter = 4000,
+                    cores = 10,
+                    chains = 10,
+                    warmup = 2000,
+                    control = list(max_treedepth = 20, stepsize = 0.001, adapt_delta = 0.999),
+                    thin = 1,
+                    file = 'ordinal_model')
 ```
 
-# pause: contrast-coding
+## Speaker rate (syllable/sec) as a covariate
+
+Get our speaker rate data:
+
 ```{r}
-flu_cred_dat$pause_contI<- 
-  ifelse(flu_cred_dat$pause == "NoPause", .5, 
-  ifelse(flu_cred_dat$pause == "BetPause", -.25,
-  ifelse(flu_cred_dat$pause == "WithinPause", -.25,
-  NA))) 
+speaker_rate = read_excel('../data/LevAri_sentences_NoPauseItemDur.xlsx')
 
-xtabs(~pause + pause_contI, data = flu_cred_dat) # check
+speaker_rate = speaker_rate %>%
+  rename(Item_num = `Item Num`) #make variable names consisten across dataframes
 
-flu_cred_dat$pause_contII<- 
-  ifelse(flu_cred_dat$pause == "NoPause", 0, 
-  ifelse(flu_cred_dat$pause == "BetPause", .5,
-  ifelse(flu_cred_dat$pause == "WithinPause", -.5,
-  NA))) 
+speaker_rate$Item_num = sub('^0+', "", speaker_rate$Item_num) #get rid of leading zeroes
 
-xtabs(~pause + pause_contII, data = flu_cred_dat) # check
+speaker_rate = speaker_rate %>%
+  dplyr::select(speaker, Item_num, SyllPerSec) #select the values we need to join by (speaker and item_num) as well as speaker rate (SyllPerSec)
+
+flu_cred_syll_dat = flu_cred_dat %>%
+  left_join(speaker_rate, by = c('speaker', 'Item_num')) #join data together
+
+flu_cred_syll_dat$RESP_NUM = as.factor(flu_cred_syll_dat$RESP_NUM)
+
+flu_cred_syll_dat$pause_contI = as.factor(flu_cred_syll_dat$pause_contI)
+
+flu_cred_syll_dat$speaker_lang_cont = as.factor(flu_cred_syll_dat$speaker_lang_cont)
+
+flu_cred_syll_dat$TF_cont = as.factor(flu_cred_syll_dat$TF_cont)
+
+flu_cred_syll_dat$Survey_cont = as.factor(flu_cred_syll_dat$Survey_cont)
+
+flu_cred_syll_dat$pause_contII = as.factor(flu_cred_syll_dat$pause_contII)
+
+flu_cred_syll_dat$RESP_NUM = ordered(flu_cred_syll_dat$RESP_NUM, levels = c('1', '2', '3', '4', '5', '6'))
+
+flu_cred_syll_dat$speaker = as.factor(flu_cred_syll_dat$speaker)
+#levels(flu_cred_syll_dat$RESP_NUM)
 ```
 
-# speaker_lang: contrast-coding
-```{r}
-flu_cred_dat$speaker_lang_cont<- 
-  ifelse(flu_cred_dat$speaker_lang == "Native", .5, 
-  ifelse(flu_cred_dat$speaker_lang == "Non-native", -.5,  
-  NA)) 
+Our model:
 
-xtabs(~speaker_lang+ speaker_lang_cont, data = flu_cred_dat) # check
+```{r}
+
+options(contrasts = c("contr.sum","contr.sum"))  #sum coding 
+
+weakly_informative_priors = c(prior(normal(0,1), class = 'Intercept'),
+                              prior(normal(0,1), class = 'b'),
+                              prior(exponential(1), class = 'sd'))
+
+ordinal_model_syllrate = brm(RESP_NUM ~ pause_contI*speaker_lang_cont*TF_cont*Survey_cont*SyllPerSec + pause_contII*speaker_lang_cont*TF_cont*Survey_cont*SyllPerSec
+                    + (1+ pause_contI + pause_contII + Survey_cont + TF_cont || speaker)
+                    + (1+ pause_contI*speaker_lang_cont*Survey_cont + pause_contII*speaker_lang_cont*Survey_cont || Item_num)
+                    + (1+ pause_contI*speaker_lang_cont*TF_cont + pause_contII*speaker_lang_cont*TF_cont || mTurkCode),
+                    data = flu_cred_syll_dat, 
+                    family = cumulative(link='logit'),
+                    iter = 12000,
+                    cores = 10,
+                    chains = 10,
+                    warmup = 6000,
+                    init_r = 0.2,
+                    prior = weakly_informative_priors,
+                    control = list(max_treedepth = 15),
+                    #control = list(max_treedepth = 20, stepsize = 0.001, adapt_delta = 0.999),
+                    #thin = 4,
+                    file = 'ordinal_model_syllrate2')
+
+
+#flu_cred_syll_dat$pause = factor(flu_cred_syll_dat$pause, labels = c('NoPause', 'BetPause', 'WithinPause'))
+
+#options(contrasts = c("contr.treatment","contr.treatment"))
+ordinal_model_syllrate2 = brm(RESP_NUM ~ pause * speaker_lang * TF * Survey * SyllPerSec +
+                                (1 + pause * Survey * TF | speaker) +
+                                (1 + pause * speaker_lang * Survey | Item_num) +
+                                (1 + pause * speaker_lang * TF | mTurkCode),
+                              save_pars = save_pars(),
+                    data = flu_cred_syll_dat, 
+                    family = cumulative(link='logit'),
+                    iter = 12000,
+                    cores = 10,
+                    chains = 10,
+                    warmup = 6000,
+                    init_r = 0.2,
+                    prior = weakly_informative_priors,
+                    #control = list(max_treedepth = 15),
+                    control = list(max_treedepth = 20, stepsize = 0.001,  
+                                   adapt_delta = 0.99),
+                    file = 'ordinal_model_syllrate2')
+
+
+#fixef(ordinal_model_syllrate2)         
+#sig effects for: speaker_lang1, speaker_lang1:Survey1, pause2:TF1:SyllPerSec
 ```
 
-# TF: contrast_coding
-```{r}
-flu_cred_dat$TF_cont<- 
-  ifelse(flu_cred_dat$TF == "TRUE", .5, 
-  ifelse(flu_cred_dat$TF == "FALSE", -.5,  
-  NA)) 
+export as word table
 
-xtabs(~ TF + TF_cont, data = flu_cred_dat) # check
+```{r}
+#bmmb::forpaper(fixef(ordinal_model_syllrate2))
+
+#write.csv(report_model, 'model report.csv',append = T)
 ```
 
-# task: contrast-coding
 ```{r}
-flu_cred_dat$Survey_cont<- 
-  ifelse(flu_cred_dat$Survey == "Credibility", .5, 
-  ifelse(flu_cred_dat$Survey == "Fluency", -.5,  
-  NA)) 
-
-xtabs(~ Survey + Survey_cont, data = flu_cred_dat) # check
+fixef(ordinal_model_syllrate2)
 ```
 
-# Base model
-```{r}
-flu_cred_model_raw_1 = lmer(RESP_NUM ~ pause_contI*speaker_lang_cont*TF_cont*Survey_cont + pause_contII*speaker_lang_cont*TF_cont*Survey_cont
-                    + (1+ pause_contI + pause_contII + Survey_cont + TF_cont|| speaker)
-                    + (1+ pause_contI*speaker_lang_cont*Survey_cont + pause_contII*speaker_lang_cont*Survey_cont|| Item_num)
-                    + (1+ pause_contI*speaker_lang_cont*TF_cont + pause_contII*speaker_lang_cont*TF_cont|| mTurkCode)
-                      , data = flu_cred_dat, REML=F, control=lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 2e5)))
-summary(flu_cred_model_raw_1)
+Now let's test the simple effects to see if there's a meaningful difference. To do this, we will use the hypothesis function (or specifically, we'll be using the short_hypothesis function which is a wrapper for the hypothesis function from the `bmmb` package.
 
-## These random effects do not account for any variance, so will be removed. 
-# mTurkCode    speaker_lang_cont:TF_cont:pause_contII
-# mTurkCode.1  pause_contI:speaker_lang_cont:TF_cont
-# mTurkCode.3  speaker_lang_cont:pause_contII  
-# mTurkCode.4  speaker_lang_cont:TF_cont
-# mTurkCode.6  pause_contI:speaker_lang_cont
-# mTurkCode.7  pause_contII
-# Item_num.1   pause_contI:speaker_lang_cont:Survey_cont 
-# Item_num.7   pause_contII  
-# Item_num.10  pause_contI 
-# speaker.2    pause_contII  
-# speaker.3    pause_contI 
+There are eleven different simple effects we're testing:
+
+1.  the effect for pause3 (this can be recovered by taking the negative sum of pause1 and pause2)
+
+2.  Whether the effect of no pause and between-clause pauses are different from within-clause pauses
+
+3.  Whether the interaction effect between pause and task are different for no-pause vs pause
+
+4.  What the effect of no pause is for the credibility task
+
+5.  What the effect of no pause is for the fluency task
+
+6.  What the effect of between-clause pause is for the credibility task
+
+7.  What the effect of between-clause pause is for the fluency task
+
+8.  What the effect of within-clause pause is for the credibility task
+
+9.  What the effect of within-clause pause is for the fluency task
+
+10. What the difference in effect is between no-pause and within-clause pause for fluency task
+
+11. What the difference in effect is between no-pause and within-clause pause for credibility task
+
+```{r}
+short_hypothesis(ordinal_model_syllrate2, c('-(pause1+pause2) = 0', #effect of within-clause pause
+                                            '(pause1 + pause2)/2 = -(pause1+pause2)', #effect of no pause vs effect of pauses (within and between clause)
+                                            'pause1:Survey1 = (pause2:Survey1 +  -(pause1:Survey1+pause2:Survey1)) / 2', #is the interaction effect between pause and task different for no-pause vs pause
+                                            'pause1 + pause1:Survey1 = 0', #the effect of no pause for credibility
+                                            'pause1 - pause1:Survey1 = 0', #no pause for fluency
+                                            'pause2 + pause2:Survey1 = 0', #between clause pause for credibility task
+                                            'pause2 - pause2:Survey1 = 0', #between clause pause for fluency task
+                                            '-(pause1+pause2) + -(pause1:Survey1 + pause2:Survey1) = 0', #within-clause pause for credibility
+                                            '-(pause1+pause2) - -(pause1:Survey1 + pause2:Survey1) = 0', #within-clause pause for fluency
+                                            'pause1 - pause1:Survey1 = -(pause1+pause2) - -(pause1:Survey1 + pause2:Survey1)', #the difference between no pause and within-clause pause for credibility task
+                                            'pause1 + pause1:Survey1 = -(pause1+pause2) + -(pause1:Survey1 + pause2:Survey1)' #the difference between no pause and within-clause pause for fluency task
+                                            )) 
+
 ```
 
-# Model 
+Let's check the posterior samples to see how many of them are above or below zero.
+
 ```{r}
-flu_cred_model_raw_1.5 = lmer(RESP_NUM ~ pause_contI*speaker_lang_cont*TF_cont*Survey_cont + pause_contII*speaker_lang_cont*TF_cont*Survey_cont
-                    + (1+ pause_contI + pause_contII + Survey_cont + TF_cont - pause_contII -pause_contI|| speaker)
-                    + (1+ pause_contI*speaker_lang_cont*Survey_cont + pause_contII*speaker_lang_cont*Survey_cont - pause_contI:speaker_lang_cont:Survey_cont - pause_contII  - pause_contI || Item_num)
-                    + (1+ pause_contI*speaker_lang_cont*TF_cont + pause_contII*speaker_lang_cont*TF_cont -speaker_lang_cont:TF_cont:pause_contII - pause_contI:speaker_lang_cont:TF_cont - speaker_lang_cont:pause_contII  - speaker_lang_cont:TF_cont - pause_contI:speaker_lang_cont - pause_contII || mTurkCode)
-                      , data = flu_cred_dat, REML=F, control=lmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 2e5)))
-summary(flu_cred_model_raw_1.5)
+post_samples = as.data.frame(fixef(ordinal_model_syllrate2, summary = F))
+
+post_no_pause_betw_vs_within = (post_samples$pause1 + post_samples$pause2) / 2 + post_samples$pause1 + post_samples$pause2 #pause and between clause vs within
+
+post_no_paus_vs_pause_by_task = post_samples$`pause1:Survey1` - ((post_samples$`pause2:Survey1` + -(post_samples$`pause1:Survey1` + post_samples$`pause2:Survey1`)) / 2)
+
+post_nopause_vs_within_by_task = post_samples$`pause1:Survey1` + post_samples$`pause1:Survey1` + post_samples$`pause2:Survey1`
+
+post_nopause_fluency = post_samples$pause1 - post_samples$`pause1:Survey1`
+
+post_withinpause_fluency = -(post_samples$pause1+post_samples$pause2) + post_samples$`pause1:Survey1` + post_samples$`pause2:Survey1`
+  
+
+mean(post_no_pause_betw_vs_within)
+mean(post_no_paus_vs_pause_by_task)
+mean(post_nopause_vs_within_by_task)
+
+sum(post_no_paus_vs_pause_by_task < 0) / length(post_no_paus_vs_pause_by_task)
+sum(post_no_pause_betw_vs_within > 0) / length(post_no_pause_betw_vs_within)
+sum(post_nopause_vs_within_by_task < 0) / length(post_nopause_vs_within_by_task)
+
+mean(post_nopause_fluency)
+mean(post_withinpause_fluency)
+
+sum(post_nopause_fluency > 0) / length(post_nopause_fluency)
+sum(post_withinpause_fluency < 0) / length(post_withinpause_fluency)
+
+post_nopause_vs_within_fluency = post_samples$pause1 - post_samples$`pause1:Survey1` + post_samples$pause1 + post_samples$pause2 - (post_samples$`pause1:Survey1` + post_samples$`pause2:Survey1`)
+
+mean(post_nopause_vs_within_fluency)
+sum(post_nopause_vs_within_fluency > 0) / length(post_nopause_vs_within_fluency)
+quantile(post_nopause_vs_within_fluency, probs = c(0.025, .975))
 ```
 
-# post-hoc examining the interaciton between talker group and task
+## post-hoc examining the interaction between talker group and task
+
 ```{r}
-lsmeans(flu_cred_model_raw_1.5, pairwise ~ speaker_lang_cont|Survey_cont, adjust="tukey")
+#lsmeans(flu_cred_model_raw_1.5, pairwise ~ speaker_lang_cont|Survey_cont, adjust="tukey")
+
+#lsmeans(ordinal_model_syllrate2, pairwise ~ speaker_lang|Survey)
+
+short_hypothesis(ordinal_model_syllrate2, c('speaker_lang1 + speaker_lang1:Survey1 = 0', 
+                                            'speaker_lang1 - speaker_lang1:Survey1 = 0'))
 ```
 
-## End
+# Investigating whether the range of responses were similar across tasks
+
+One of the reviewers wanted to know whether the full range of responses was utilized in both tasks.
+
+```{r}
+ggplot(data = flu_cred_syll_dat, aes(x = RESP_NUM, fill = Survey)) +
+  geom_bar(position = 'dodge') + 
+  theme_bw()
+```
+
+Finally, we can take the average of min responses and max responses for each participant to make sure they were utilizing the same range of responses across tasks:
+
+```{r}
+cred_task = flu_cred_syll_dat %>%
+  filter(Survey == 'Credibility')
+flu_task = flu_cred_syll_dat %>%
+  filter(Survey == 'Fluency')
+
+cred_task$RESP_NUM = as.numeric(cred_task$RESP_NUM)
+flu_task$RESP_NUM = as.numeric(flu_task$RESP_NUM)
+
+cred_task_min_part_scores = cred_task %>%
+  group_by(mTurkCode) %>%
+  summarize(min(RESP_NUM))
+
+flu_task_min_part_scores = flu_task %>%
+  group_by(mTurkCode) %>%
+  summarize(min(RESP_NUM))
+
+cred_task_max_part_scores = cred_task %>%
+  group_by(mTurkCode) %>%
+  summarize(max(RESP_NUM))
+
+flu_task_max_part_scores = flu_task %>%
+  group_by(mTurkCode) %>%
+  summarize(max(RESP_NUM))
+
+mean(cred_task_min_part_scores$`min(RESP_NUM)`)
+mean(cred_task_max_part_scores$`max(RESP_NUM)`)
+mean(flu_task_min_part_scores$`min(RESP_NUM)`)
+mean(flu_task_max_part_scores$`max(RESP_NUM)`)
+```
+
+# End
